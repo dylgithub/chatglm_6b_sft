@@ -40,7 +40,8 @@ class Seq2SeqDataSet(Dataset):
                 if len(tgt_tokens) > max_tgt_len:
                     tgt_tokens = tgt_tokens[:max_tgt_len]
                 # 问、答之间需要通过特殊字符进行分割，同时需要添加终止符
-                # <sop>是下一个句子开始的标记
+                # [gMASK]与<sop>作为模型生成结果的起始标记，属于同一个block，
+                # 所以这两个token对应的在原始文本中所在的位置是一样的，具体可参考这个issue https://github.com/THUDM/ChatGLM-6B/issues/1313
                 # tokens = prompt_tokens + src_tokens + ["[gMASK]", "<sop>"] + tgt_tokens + ["<eop>"]
                 tokens = prompt_tokens + src_tokens + [tokenizer.gmask_token, tokenizer.bos_token] + tgt_tokens + [tokenizer.eos_token]
                 input_ids = tokenizer.convert_tokens_to_ids(tokens)
