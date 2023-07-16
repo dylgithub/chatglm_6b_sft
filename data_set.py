@@ -79,8 +79,9 @@ def coll_fn(batch):
         labels_list.append(torch.tensor(instance["labels"], dtype=torch.long))
         attention_mask_list.append(torch.tensor(instance["attention_mask"]))
     # dataset中已经根据设定的长度进行了长度对齐
+    # 3是[pad]这个特殊的token对应的token_id,不同版本可能不一样
     sample = {"input_ids": pad_sequence(input_ids_list, batch_first=True, padding_value=3),
-            "labels": pad_sequence(labels_list, batch_first=True, padding_value=3),
+            "labels": pad_sequence(labels_list, batch_first=True, padding_value=-100),
             # "attention_mask": pad_sequence(attention_mask_list, batch_first=True, padding_value=False)
             }
     # items = {k: torch.tensor(v).to("cuda:1") for k, v in sample.items()}
