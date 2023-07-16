@@ -25,7 +25,8 @@ class Seq2SeqDataSet(Dataset):
         with open(data_path, "r", encoding="utf-8") as fh:
             for i, line in enumerate(fh):
                 sample = json.loads(line.strip())
-                # chatglm的token不是中文的字
+                # chatglm的token不是中文的字，是词
+                # add_special_tokens = True时会在末位添加["[gMASK]", "<sop>"]
                 src_tokens = tokenizer.tokenize(sample["text"])
                 # print(sample["text"])
                 # print(src_tokens)
@@ -39,6 +40,7 @@ class Seq2SeqDataSet(Dataset):
                 if len(tgt_tokens) > max_tgt_len:
                     tgt_tokens = tgt_tokens[:max_tgt_len]
                 # 问、答之间需要通过特殊字符进行分割，同时需要添加终止符
+                # <sop>是下一个句子开始的标记
                 # tokens = prompt_tokens + src_tokens + ["[gMASK]", "<sop>"] + tgt_tokens + ["<eop>"]
                 tokens = prompt_tokens + src_tokens + [tokenizer.gmask_token, tokenizer.bos_token] + tgt_tokens + [tokenizer.eos_token]
                 input_ids = tokenizer.convert_tokens_to_ids(tokens)
