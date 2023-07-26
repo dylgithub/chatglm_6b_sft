@@ -11,14 +11,13 @@ import torch
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
 import argparse
 import time
+import deepspeed
 from torch.utils.data import RandomSampler, DataLoader
 from data_set import Seq2SeqDataSet, coll_fn
 import os
 from shutil import copy
 from peft import LoraConfig, get_peft_model, get_peft_model_state_dict, prepare_model_for_int8_training, \
     set_peft_model_state_dict
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
 def print_trainable_parameters(model):
@@ -40,7 +39,7 @@ def print_trainable_parameters(model):
 def set_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_path', default='data/spo_0.json', type=str, help='')
-    parser.add_argument('--model_dir', default="/root/dyl/demo/ChatGLM-6B/models/chatglm-6b/", type=str, help='')
+    parser.add_argument('--model_dir', default="/content/drive/MyDrive/model/chatglm-6b/", type=str, help='')
     # parser.add_argument('--model_dir', default="THUDM/chatglm-6b", type=str, help='')
     parser.add_argument('--num_train_epochs', default=1, type=int, help='')
     parser.add_argument('--train_batch_size', default=1, type=int, help='')
@@ -59,7 +58,6 @@ def set_args():
 
 
 def main():
-    device = "cuda:1"
     args = set_args()
     # AutoModel可以使用自定义的模型trust_remote_code要设定为True
     # 注意这里对model的half转换，要在加载原始模型时就转换，不能在获取peft_model之后
@@ -79,7 +77,38 @@ def main():
                         )
 
     model = get_peft_model(model, config)
-    model = model.to(device)
+    conf = {"train_micro_batch_size_per_gpu": args.train_batch_size,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "optimizer": {
+                "type": "Adam",
+                "params": {
+                    "lr": 1e-5,
+                    "betas": [
+                        0.9,
+                        0.95
+                    ],
+                    "eps": 1e-8,
+                    "weight_decay": 5e-4
+                }
+            },
+            "fp16": {
+                "enabled": True
+            },
+            "zero_optimization": {
+                "stage": 1,
+                "offload_optimizer": {
+                    "device": "cpu",
+                    "pin_memory": True
+                },
+                "allgather_partitions": True,
+                "allgather_bucket_size": 2e8,
+                "overlap_comm": True,
+                "reduce_scatter": True,
+                "reduce_bucket_size": 2e8,
+                "contiguous_gradients": True
+            },
+            "steps_per_print": args.log_steps
+            }
     print_trainable_parameters(model)
     for name, param in model.named_parameters():
         if param.requires_grad == True:
@@ -93,30 +122,39 @@ def main():
                                   collate_fn=coll_fn,
                                   drop_last=False,
                                   num_workers=0)
-
+    model_engine, optimizer, _, _ = deepspeed.initialize(config=conf,
+                                                         model=model,
+                                                         model_parameters=model.parameters())
     # optimizer and lr scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    lr_scheduler = get_linear_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=(len(train_dataloader) * args.num_train_epochs),
-    )
-    model.train()
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    # lr_scheduler = get_linear_schedule_with_warmup(
+    #     optimizer=optimizer,
+    #     num_warmup_steps=0,
+    #     num_training_steps=(len(train_dataloader) * args.num_train_epochs),
+    # )
+    model_engine.train()
+    global_step = 0
     for i_epoch in range(args.num_train_epochs):
         train_iter = iter(train_dataloader)
         for step, batch in enumerate(train_iter):
             # 数据和模型使用相同gpu
-            batch = {k: v.to(device) for k, v in batch.items()}
-            outputs = model(**batch)
-            loss = outputs.loss
+            input_ids = batch["input_ids"].cuda()
+            labels = batch["labels"].cuda()
+            outputs = model_engine.forward(input_ids=input_ids, labels=labels)
+            loss = outputs[0]
+            if conf["gradient_accumulation_steps"] > 1:
+                loss = loss / conf["gradient_accumulation_steps"]
+            model_engine.backward(loss)
             print(loss)
-            loss.backward()
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if (step + 1) % conf["gradient_accumulation_steps"] == 0:
+                model_engine.step()
+                global_step += 1
+            if global_step % args.log_steps == 0:
+                print("loss:{}, global_step:{}".format(float(loss.item()), global_step))
     # 注意这里的模型保存方式，peft重写了model的save_pretrained方法，这里只把lora层的权重进行存储
     # 如果是用trainer进行训练，需要注意对模型保存的方法进行重写只保存lora的参数，具体参考：https://cloud.tencent.com/developer/article/2276508
-    model.save_pretrained(args.output_dir)
+    model_engine.save_pretrained(args.output_dir)
     copy(os.path.join(args.model_dir, "tokenizer_config.json"), os.path.join(args.output_dir, "tokenizer_config.json"))
     copy(os.path.join(args.model_dir, "tokenization_chatglm.py"),
          os.path.join(args.output_dir, "tokenization_chatglm.py"))
