@@ -77,7 +77,7 @@ def main():
                         )
 
     model = get_peft_model(model, config)
-    conf = {"train_micro_batch_size_per_gpu": args.train_batch_size,
+    ds_conf = {"train_micro_batch_size_per_gpu": args.train_batch_size,
             "gradient_accumulation_steps": args.gradient_accumulation_steps,
             "optimizer": {
                 "type": "Adam",
@@ -122,7 +122,7 @@ def main():
                                   collate_fn=coll_fn,
                                   drop_last=False,
                                   num_workers=0)
-    model_engine, optimizer, _, _ = deepspeed.initialize(config=conf,
+    model_engine, optimizer, _, _ = deepspeed.initialize(config=ds_conf,
                                                          model=model,
                                                          model_parameters=model.parameters())
     # optimizer and lr scheduler
@@ -142,12 +142,12 @@ def main():
             labels = batch["labels"].cuda()
             outputs = model_engine.forward(input_ids=input_ids, labels=labels)
             loss = outputs[0]
-            if conf["gradient_accumulation_steps"] > 1:
-                loss = loss / conf["gradient_accumulation_steps"]
+            if ds_conf["gradient_accumulation_steps"] > 1:
+                loss = loss / ds_conf["gradient_accumulation_steps"]
             model_engine.backward(loss)
             print(loss)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            if (step + 1) % conf["gradient_accumulation_steps"] == 0:
+            if (step + 1) % ds_conf["gradient_accumulation_steps"] == 0:
                 model_engine.step()
                 global_step += 1
             if global_step % args.log_steps == 0:
